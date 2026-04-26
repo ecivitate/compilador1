@@ -1,107 +1,355 @@
 %{
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "ast.h"
+#include "semantic.h"
+#include "codegen.h"
 
-extern int yylineno;
+extern int   yylineno;
 extern char *yytext;
-extern int yylex();
+extern int   yylex();
 extern FILE *yyin;
 
 void yyerror(const char *s);
+
+ASTNode *ast_root = NULL;
 %}
 
-/* Tokens que nao correspondem a apenas um caractere */
-%token PRINCIPAL IDENTIFICADOR INT CAR LEIA ESCREVA NOVALINHA
-%token SE ENTAO SENAO FIMSE ENQUANTO
-%token CADEIACARACTERES OU E IGUAL DIFERENTE MAIORIGUAL MENORIGUAL
-%token CARCONST INTCONST
+%locations
+
+%union {
+    ASTNode *node;
+    TipoVar  tipo;
+    char    *lexeme;
+}
+
+%token PRINCIPAL LEIA ESCREVA NOVALINHA SE ENTAO SENAO FIMSE ENQUANTO
+%token INT CAR
+%token OU E IGUAL DIFERENTE MAIORIGUAL MENORIGUAL
+
+%token <lexeme> IDENTIFICADOR INTCONST CARCONST CADEIACARACTERES
+
+%type <node> programa declprograma bloco varsection
+%type <node> listadeclvar declvar
+%type <node> listacomando comando
+%type <node> expr orexpr andexpr eqexpr desigexpr addexpr mulexpr unexpr primexpr
+%type <tipo> tipo
 
 %%
-programa : declprograma
-         ;
 
-declprograma : PRINCIPAL bloco
-             ;
+programa
+    : declprograma
+        { $$ = $1; ast_root = $$; }
+    ;
 
-bloco : '{' listacomando '}'
-      | varsection '{' listacomando '}'
-      ;
+declprograma
+    : PRINCIPAL bloco
+        {
+            $$ = newNode(NODE_PROGRAM, @1.first_line);
+            $$->child[0] = $2;
+        }
+    ;
 
-varsection : '{' listadeclvar '}'
-           ;
+bloco
+    : '{' listacomando '}'
+        {
+            $$ = newNode(NODE_BLOCK, @1.first_line);
+            $$->child[1] = $2;
+        }
+    | varsection '{' listacomando '}'
+        {
+            $$ = newNode(NODE_BLOCK, @2.first_line);
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    ;
 
-listadeclvar : IDENTIFICADOR declvar ':' tipo ';' listadeclvar
-             | IDENTIFICADOR declvar ':' tipo ';'
-             ;
+varsection
+    : '{' listadeclvar '}'
+        { $$ = $2; }
+    ;
 
-declvar : /* cadeia vazia */
-        | ',' IDENTIFICADOR declvar
-        ;
+listadeclvar
+    : IDENTIFICADOR declvar ':' tipo ';' listadeclvar
+        {
+            ASTNode *first = newNode(NODE_DECL, @1.first_line);
+            first->lexeme = $1;
+            first->tipo   = $4;
 
-tipo : INT
-     | CAR
-     ;
+            ASTNode *cur = $2;
+            while (cur) { cur->tipo = $4; cur = cur->next; }
 
-listacomando : comando
-             | comando listacomando
-             ;
+            if ($2) {
+                ASTNode *tail = $2;
+                while (tail->next) tail = tail->next;
+                tail->next  = $6;
+                first->next = $2;
+            } else {
+                first->next = $6;
+            }
+            $$ = first;
+        }
+    | IDENTIFICADOR declvar ':' tipo ';'
+        {
+            ASTNode *first = newNode(NODE_DECL, @1.first_line);
+            first->lexeme = $1;
+            first->tipo   = $4;
 
-comando : ';'
-        | expr ';'
-        | LEIA IDENTIFICADOR ';'
-        | ESCREVA expr ';'
-        | ESCREVA CADEIACARACTERES ';'
-        | NOVALINHA ';'
-        | SE '(' expr ')' ENTAO comando FIMSE
-        | SE '(' expr ')' ENTAO comando SENAO comando FIMSE
-        | ENQUANTO '(' expr ')' comando
-        | bloco
-        ;
+            ASTNode *cur = $2;
+            while (cur) { cur->tipo = $4; cur = cur->next; }
 
-expr : orexpr
-     | IDENTIFICADOR '=' expr
-     ;
+            if ($2) {
+                ASTNode *tail = $2;
+                while (tail->next) tail = tail->next;
+                first->next = $2;
+            }
+            $$ = first;
+        }
+    ;
 
-orexpr : orexpr OU andexpr
-       | andexpr
-       ;
+declvar
+    : /* vazio */
+        { $$ = NULL; }
+    | ',' IDENTIFICADOR declvar
+        {
+            $$ = newNode(NODE_DECL, @2.first_line);
+            $$->lexeme = $2;
+            $$->tipo   = TIPO_NENHUM;
+            $$->next   = $3;
+        }
+    ;
 
-andexpr : andexpr E eqexpr
-        | eqexpr
-        ;
+tipo
+    : INT { $$ = TIPO_INT; }
+    | CAR { $$ = TIPO_CAR; }
+    ;
 
-eqexpr : eqexpr IGUAL desigexpr
-       | eqexpr DIFERENTE desigexpr
-       | desigexpr
-       ;
+listacomando
+    : comando
+        { $$ = $1; }
+    | comando listacomando
+        {
+            if ($1) {
+                ASTNode *tail = $1;
+                while (tail->next) tail = tail->next;
+                tail->next = $2;
+                $$ = $1;
+            } else {
+                $$ = $2;
+            }
+        }
+    ;
 
-desigexpr : desigexpr '<' addexpr
-          | desigexpr '>' addexpr
-          | desigexpr MAIORIGUAL addexpr
-          | desigexpr MENORIGUAL addexpr
-          | addexpr
-          ;
+comando
+    : ';'
+        { $$ = NULL; }
+    | expr ';'
+        { $$ = $1; }
+    | LEIA IDENTIFICADOR ';'
+        {
+            $$ = newNode(NODE_LEIA, @1.first_line);
+            $$->lexeme = $2;
+        }
+    | ESCREVA expr ';'
+        {
+            $$ = newNode(NODE_ESCREVA, @1.first_line);
+            $$->child[0] = $2;
+        }
+    | ESCREVA CADEIACARACTERES ';'
+        {
+            ASTNode *cad = newNode(NODE_CADEIA, @2.first_line);
+            cad->lexeme  = $2;
+            $$ = newNode(NODE_ESCREVA, @1.first_line);
+            $$->child[0] = cad;
+        }
+    | NOVALINHA ';'
+        { $$ = newNode(NODE_NOVALINHA, @1.first_line); }
+    | SE '(' expr ')' ENTAO comando FIMSE
+        {
+            $$ = newNode(NODE_SE, @1.first_line);
+            $$->child[0] = $3;
+            $$->child[1] = $6;
+        }
+    | SE '(' expr ')' ENTAO comando SENAO comando FIMSE
+        {
+            $$ = newNode(NODE_SE, @1.first_line);
+            $$->child[0] = $3;
+            $$->child[1] = $6;
+            $$->child[2] = $8;
+        }
+    | ENQUANTO '(' expr ')' comando
+        {
+            $$ = newNode(NODE_ENQUANTO, @1.first_line);
+            $$->child[0] = $3;
+            $$->child[1] = $5;
+        }
+    | bloco
+        { $$ = $1; }
+    ;
 
-addexpr : addexpr '+' mulexpr
-        | addexpr '-' mulexpr
-        | mulexpr
-        ;
+expr
+    : orexpr
+        { $$ = $1; }
+    | IDENTIFICADOR '=' expr
+        {
+            $$ = newNode(NODE_ATRIB, @1.first_line);
+            $$->lexeme   = $1;
+            $$->child[0] = $3;
+        }
+    ;
 
-mulexpr : mulexpr '*' unexpr
-        | mulexpr '/' unexpr
-        | unexpr
-        ;
+orexpr
+    : orexpr OU andexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("||");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | andexpr
+        { $$ = $1; }
+    ;
 
-unexpr : '-' primexpr
-       | '!' primexpr
-       | primexpr
-       ;
+andexpr
+    : andexpr E eqexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("&");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | eqexpr
+        { $$ = $1; }
+    ;
 
-primexpr : IDENTIFICADOR
-         | CARCONST
-         | INTCONST
-         | '(' expr ')'
-         ;
+eqexpr
+    : eqexpr IGUAL desigexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("==");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | eqexpr DIFERENTE desigexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("!=");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | desigexpr
+        { $$ = $1; }
+    ;
+
+desigexpr
+    : desigexpr '<' addexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("<");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | desigexpr '>' addexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup(">");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | desigexpr MAIORIGUAL addexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup(">=");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | desigexpr MENORIGUAL addexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("<=");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | addexpr
+        { $$ = $1; }
+    ;
+
+addexpr
+    : addexpr '+' mulexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("+");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | addexpr '-' mulexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("-");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | mulexpr
+        { $$ = $1; }
+    ;
+
+mulexpr
+    : mulexpr '*' unexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("*");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | mulexpr '/' unexpr
+        {
+            $$ = newNode(NODE_BINOP, @2.first_line);
+            $$->lexeme   = strdup("/");
+            $$->child[0] = $1;
+            $$->child[1] = $3;
+        }
+    | unexpr
+        { $$ = $1; }
+    ;
+
+unexpr
+    : '-' primexpr
+        {
+            $$ = newNode(NODE_UNOP, @1.first_line);
+            $$->lexeme   = strdup("-");
+            $$->child[0] = $2;
+        }
+    | '!' primexpr
+        {
+            $$ = newNode(NODE_UNOP, @1.first_line);
+            $$->lexeme   = strdup("!");
+            $$->child[0] = $2;
+        }
+    | primexpr
+        { $$ = $1; }
+    ;
+
+primexpr
+    : IDENTIFICADOR
+        {
+            $$ = newNode(NODE_IDENT, @1.first_line);
+            $$->lexeme = $1;
+        }
+    | INTCONST
+        {
+            $$ = newNode(NODE_INTCONST, @1.first_line);
+            $$->lexeme = $1;
+        }
+    | CARCONST
+        {
+            $$ = newNode(NODE_CARCONST, @1.first_line);
+            $$->lexeme = $1;
+        }
+    | '(' expr ')'
+        { $$ = $2; }
+    ;
+
 %%
 
 int main(int argc, char **argv) {
@@ -118,6 +366,26 @@ int main(int argc, char **argv) {
 
     yyparse();
     fclose(yyin);
+
+    if (ast_root) {
+        semanticAnalyze(ast_root);
+
+        char outname[512];
+        strncpy(outname, argv[1], sizeof(outname) - 5);
+        outname[sizeof(outname) - 5] = '\0';
+        char *dot = strrchr(outname, '.');
+        if (dot) strcpy(dot, ".asm");
+        else strcat(outname, ".asm");
+
+        FILE *out = fopen(outname, "w");
+        if (!out) { fprintf(stderr, "erro: nao foi possivel criar %s\n", outname); return 1; }
+        codegenProgram(ast_root, out);
+        fclose(out);
+
+        printAST(ast_root, 0);
+        freeAST(ast_root);
+    }
+
     return 0;
 }
 

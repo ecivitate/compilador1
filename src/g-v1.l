@@ -2,7 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ast.h"
 #include "g-v1.tab.h"
+
+#define YY_USER_ACTION \
+    yylloc.first_line = yylloc.last_line = yylineno;
 %}
 
 %option yylineno noyywrap
@@ -10,7 +14,7 @@
 LETRA       [a-zA-Z]
 DIGITO      [0-9]
 ID          ({LETRA}|_)(({LETRA}|{DIGITO}|_))*
-INTCONST_R  [+-]?{DIGITO}+
+INTCONST_R  {DIGITO}+
 CAR_ESC     \\[ntr'\"\\]
 CAR_NORM    [^\\'\n]
 CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
@@ -26,7 +30,7 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 <comentario>"*"+"/"     { BEGIN(INITIAL); }
 
 <comentario><<EOF>>     {
-                           printf("ERRO: COMENTÁRIO NAO TERMINA %d\n", yylineno);
+                           printf("ERRO: COMENTARIO NAO TERMINA %d\n", yylineno);
                            exit(1);
                         }
 
@@ -49,16 +53,16 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 ">="                    { return MAIORIGUAL; }
 "<="                    { return MENORIGUAL; }
 
-\"([^\"\n]|\\.)*\"      { return CADEIACARACTERES; }
+\"([^\"\n]|\\.)*\"      { yylval.lexeme = strdup(yytext); return CADEIACARACTERES; }
 
 \"([^\"\n]|\\.)*\n      {
                            printf("ERRO: CADEIA DE CARACTERES OCUPA MAIS DE UMA LINHA %d\n", yylineno);
                            exit(1);
                         }
 
-{CARCONST_R}            { return CARCONST; }
-{INTCONST_R}            { return INTCONST; }
-{ID}                    { return IDENTIFICADOR; }
+{CARCONST_R}            { yylval.lexeme = strdup(yytext); return CARCONST; }
+{INTCONST_R}            { yylval.lexeme = strdup(yytext); return INTCONST; }
+{ID}                    { yylval.lexeme = strdup(yytext); return IDENTIFICADOR; }
 
 "{"                     { return '{'; }
 "}"                     { return '}'; }
@@ -80,7 +84,9 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 \n                      ;
 
 .                       {
-                           printf("ERRO: CARACTERE INVÁLIDO %d\n", yylineno);
+                           printf("ERRO: CARACTERE INVALIDO %d\n", yylineno);
                            exit(1);
                         }
+
+<<EOF>>                 { return 0; }
 %%

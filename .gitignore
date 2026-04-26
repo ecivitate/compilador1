@@ -1,0 +1,14 @@
+# Bison/Flex generated files
+g-v1.tab.c
+g-v1.tab.h
+lex.yy.c
+
+# Compiled binary
+g-v1
+g-v1.exe
+
+# Object files
+*.o
+
+# Generated MIPS assembly output
+*.asm
