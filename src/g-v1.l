@@ -9,7 +9,7 @@
     yylloc.first_line = yylloc.last_line = yylineno;
 %}
 
-%option yylineno noyywrap
+%option yylineno noyywrap noinput nounput
 
 LETRA       [a-zA-Z]
 DIGITO      [0-9]
@@ -30,7 +30,7 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 <comentario>"*"+"/"     { BEGIN(INITIAL); }
 
 <comentario><<EOF>>     {
-                           printf("ERRO: COMENTARIO NAO TERMINA %d\n", yylineno);
+                           fprintf(stderr, "ERRO: COMENTARIO NAO TERMINA %d\n", yylineno);
                            exit(1);
                         }
 
@@ -56,7 +56,7 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 \"([^\"\n]|\\.)*\"      { yylval.lexeme = strdup(yytext); return CADEIACARACTERES; }
 
 \"([^\"\n]|\\.)*\n      {
-                           printf("ERRO: CADEIA DE CARACTERES OCUPA MAIS DE UMA LINHA %d\n", yylineno);
+                           fprintf(stderr, "ERRO: CADEIA DE CARACTERES OCUPA MAIS DE UMA LINHA %d\n", yylineno);
                            exit(1);
                         }
 
@@ -84,7 +84,7 @@ CARCONST_R  \'({CAR_ESC}|{CAR_NORM})\'
 \n                      ;
 
 .                       {
-                           printf("ERRO: CARACTERE INVALIDO %d\n", yylineno);
+                           fprintf(stderr, "ERRO: CARACTERE INVALIDO %d\n", yylineno);
                            exit(1);
                         }
 

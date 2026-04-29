@@ -84,23 +84,67 @@ static TipoVar analyzeNode(ASTNode *node, SymTable *st) {
         case NODE_BINOP: {
             TipoVar left  = analyzeNode(node->child[0], st);
             TipoVar right = analyzeNode(node->child[1], st);
+            const char *op = node->lexeme;
+
             if (left != TIPO_NENHUM && right != TIPO_NENHUM && left != right) {
                 fprintf(stderr,
                     "ERRO: OPERACAO COM TIPOS INCOMPATIVEIS linha %d\n",
                     node->line);
                 exit(1);
             }
-            const char *op = node->lexeme;
-            if (strcmp(op,"||")==0 || strcmp(op,"&")==0  ||
-                strcmp(op,"==")==0 || strcmp(op,"!=")==0 ||
-                strcmp(op,"<") ==0 || strcmp(op,">") ==0 ||
-                strcmp(op,">=")==0 || strcmp(op,"<=")==0)
+
+            if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+                strcmp(op, "*") == 0 || strcmp(op, "/") == 0) {
+                if (left != TIPO_INT || right != TIPO_INT) {
+                    fprintf(stderr,
+                        "ERRO: OPERADOR ARITMETICO EXIGE INT linha %d\n",
+                        node->line);
+                    exit(1);
+                }
                 return TIPO_INT;
-            return (left != TIPO_NENHUM) ? left : right;
+            }
+
+            if (strcmp(op, "||") == 0 || strcmp(op, "&") == 0 ||
+                strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
+                strcmp(op, "<")  == 0 || strcmp(op, ">")  == 0 ||
+                strcmp(op, ">=") == 0 || strcmp(op, "<=") == 0) {
+                return TIPO_INT;
+            }
+
+            return TIPO_NENHUM;
         }
 
-        case NODE_UNOP:
-            return analyzeNode(node->child[0], st);
+        case NODE_UNOP: {
+            TipoVar t = analyzeNode(node->child[0], st);
+
+            if (strcmp(node->lexeme, "-") == 0) {
+                if (t != TIPO_INT) {
+                    fprintf(stderr,
+                            "ERRO: OPERADOR UNARIO '-' EXIGE INT linha %d\n",
+                            node->line);
+                    exit(1);
+                }
+
+                return TIPO_INT;
+            }
+
+            if (strcmp(node->lexeme, "!") == 0) {
+                if (t != TIPO_INT) {
+                    fprintf(stderr,
+                            "ERRO: OPERADOR LOGICO '!' EXIGE INT linha %d\n",
+                            node->line);
+                    exit(1);
+                }
+
+                return TIPO_INT;
+            }
+
+            fprintf(stderr,
+                    "ERRO: OPERADOR UNARIO INVALIDO %s linha %d\n",
+                    node->lexeme ? node->lexeme : "",
+                    node->line);
+            exit(1);
+        }
 
         case NODE_IDENT: {
             SymEntry *e = symtableLookup(st, node->lexeme);

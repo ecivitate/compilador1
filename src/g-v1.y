@@ -364,8 +364,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    yyparse();
+    int parseResult = yyparse();
     fclose(yyin);
+
+    if (parseResult != 0) {
+        freeAST(ast_root);
+        return 1;
+    }
 
     if (ast_root) {
         semanticAnalyze(ast_root);
@@ -382,7 +387,6 @@ int main(int argc, char **argv) {
         codegenProgram(ast_root, out);
         fclose(out);
 
-        printAST(ast_root, 0);
         freeAST(ast_root);
     }
 

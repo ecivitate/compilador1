@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include "codegen.h"
 
-/* ── helpers ────────────────────────────────────────────────── */
+/* helpers */
 
 static void emit(CodeGen *cg, const char *fmt, ...) {
     va_list ap;
@@ -21,11 +21,11 @@ static void pushT0(CodeGen *cg) {
 
 /* Pop top of expression-evaluation stack into $t1 */
 static void popT1(CodeGen *cg) {
-    emit(cg, "    lw    $t1, 0($sp)        # pop → $t1\n");
+    emit(cg, "    lw    $t1, 0($sp)        # pop to $t1\n");
     emit(cg, "    addiu $sp, $sp, 4\n");
 }
 
-/* ── codegen symbol table ────────────────────────────────────── */
+/* codegen symbol table */
 
 static void cgPushScope(CodeGen *cg) {
     CGScope *s = calloc(1, sizeof(CGScope));
@@ -59,7 +59,7 @@ static CGEntry *cgLookup(CodeGen *cg, const char *name) {
     return NULL;
 }
 
-/* ── string pre-pass ─────────────────────────────────────────── */
+/* string pre-pass */
 
 static void collectStrings(CodeGen *cg, ASTNode *node) {
     if (!node) return;
@@ -81,7 +81,7 @@ static int stringId(CodeGen *cg, ASTNode *node) {
     return -1;
 }
 
-/* ── character-constant parser ───────────────────────────────── */
+/* character-constant parser */
 
 static int parseCarconst(const char *lex) {
     /* lexeme is 'x' or '\e' */
@@ -98,31 +98,31 @@ static int parseCarconst(const char *lex) {
     return (unsigned char)lex[1];
 }
 
-/* ── forward declarations ────────────────────────────────────── */
+/* forward declarations */
 
 static TipoVar codegenExpr(CodeGen *cg, ASTNode *node);
 static void    codegenNode(CodeGen *cg, ASTNode *node);
 static void    codegenBlock(CodeGen *cg, ASTNode *node);
 
-/* ── expression code generation (result always in $t0) ───────── */
+/* expression code generation (result always in $t0) */
 
 static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
     if (!node) return TIPO_NENHUM;
 
     switch (node->kind) {
 
-        /* ── integer constant ── */
+        /* integer constant */
         case NODE_INTCONST:
             emit(cg, "    li    $t0, %s          # intconst\n", node->lexeme);
             return TIPO_INT;
 
-        /* ── character constant ── */
+        /* character constant */
         case NODE_CARCONST:
             emit(cg, "    li    $t0, %d          # carconst %s\n",
                  parseCarconst(node->lexeme), node->lexeme);
             return TIPO_CAR;
 
-        /* ── identifier ── */
+        /* identifier */
         case NODE_IDENT: {
             CGEntry *e = cgLookup(cg, node->lexeme);
             emit(cg, "    lw    $t0, %d($fp)     # load %s\n",
@@ -130,7 +130,7 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
             return e->tipo;
         }
 
-        /* ── assignment (also an expression) ── */
+        /* assignment (also an expression) */
         case NODE_ATRIB: {
             CGEntry *e = cgLookup(cg, node->lexeme);
             TipoVar  t = codegenExpr(cg, node->child[0]);
@@ -139,7 +139,7 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
             return t;
         }
 
-        /* ── unary op ── */
+        /* unary op */
         case NODE_UNOP: {
             TipoVar t = codegenExpr(cg, node->child[0]);
             if (node->lexeme[0] == '-') {
@@ -151,7 +151,7 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
             return t;
         }
 
-        /* ── binary op ── */
+        /* binary op */
         case NODE_BINOP: {
             TipoVar lt = codegenExpr(cg, node->child[0]);
             pushT0(cg);
@@ -170,8 +170,16 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
             else if (!strcmp(op, ">=")) emit(cg, "    sge   $t0, $t1, $t0   # >=\n");
             else if (!strcmp(op, "==")) emit(cg, "    seq   $t0, $t1, $t0   # ==\n");
             else if (!strcmp(op, "!=")) emit(cg, "    sne   $t0, $t1, $t0   # !=\n");
-            else if (!strcmp(op, "||")) emit(cg, "    or    $t0, $t1, $t0   # ||\n");
-            else if (!strcmp(op, "&"))  emit(cg, "    and   $t0, $t1, $t0   # &\n");
+            else if (!strcmp(op, "||")) {
+                emit(cg, "    sne   $t1, $t1, $zero  # left != 0\n");
+                emit(cg, "    sne   $t0, $t0, $zero  # right != 0\n");
+                emit(cg, "    or    $t0, $t1, $t0    # logical or\n");
+            }
+            else if (!strcmp(op, "&")) {
+                emit(cg, "    sne   $t1, $t1, $zero  # left != 0\n");
+                emit(cg, "    sne   $t0, $t0, $zero  # right != 0\n");
+                emit(cg, "    and   $t0, $t1, $t0    # logical and\n");
+            }
 
             /* comparisons/logical produce int */
             if (!strcmp(op,"<") || !strcmp(op,">") || !strcmp(op,"<=") ||
@@ -186,17 +194,17 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
     }
 }
 
-/* ── control flow ────────────────────────────────────────────── */
+/* control flow */
 
 static void codegenSe(CodeGen *cg, ASTNode *node) {
     int id = cg->labelCount++;
 
-    /* evaluate condition → $t0 */
+    /* evaluate condition to $t0 */
     codegenExpr(cg, node->child[0]);
 
     if (node->child[2]) {
         /* se … entao … senao … fimse */
-        emit(cg, "    beq   $t0, $zero, se_else_%d  # if false → else\n", id);
+        emit(cg, "    beq   $t0, $zero, se_else_%d  # if false go to else\n", id);
         codegenNode(cg, node->child[1]);                /* then branch */
         emit(cg, "    j     se_fim_%d               # skip else\n", id);
         emit(cg, "se_else_%d:\n", id);
@@ -204,7 +212,7 @@ static void codegenSe(CodeGen *cg, ASTNode *node) {
         emit(cg, "se_fim_%d:\n", id);
     } else {
         /* se … entao … fimse */
-        emit(cg, "    beq   $t0, $zero, se_fim_%d   # if false → end\n", id);
+        emit(cg, "    beq   $t0, $zero, se_fim_%d   # if false go to end\n", id);
         codegenNode(cg, node->child[1]);                /* then branch */
         emit(cg, "se_fim_%d:\n", id);
     }
@@ -214,14 +222,14 @@ static void codegenEnquanto(CodeGen *cg, ASTNode *node) {
     int id = cg->labelCount++;
 
     emit(cg, "enq_%d:\n", id);
-    codegenExpr(cg, node->child[0]);                    /* condition → $t0 */
-    emit(cg, "    beq   $t0, $zero, enq_fim_%d    # if false → exit loop\n", id);
+    codegenExpr(cg, node->child[0]);                    /* condition to $t0 */
+    emit(cg, "    beq   $t0, $zero, enq_fim_%d    # if false go to exit loop\n", id);
     codegenNode(cg, node->child[1]);                    /* body */
     emit(cg, "    j     enq_%d                    # back to test\n", id);
     emit(cg, "enq_fim_%d:\n", id);
 }
 
-/* ── statement dispatcher (stubs for LEIA/ESCREVA/NOVALINHA remain) ── */
+/* statement dispatcher (stubs for LEIA/ESCREVA/NOVALINHA remain)*/
 
 static void codegenNode(CodeGen *cg, ASTNode *node) {
     if (!node) return;
@@ -258,7 +266,7 @@ static void codegenNode(CodeGen *cg, ASTNode *node) {
                 emit(cg, "    li    $v0, 12            # read char\n");
                 emit(cg, "    syscall\n");
             }
-            emit(cg, "    sw    $v0, %d($fp)     # store → %s\n",
+            emit(cg, "    sw    $v0, %d($fp)     # store to %s\n",
                  e->offset, node->lexeme);
             break;
         }
@@ -290,26 +298,34 @@ static void codegenNode(CodeGen *cg, ASTNode *node) {
 }
 
 static void codegenBlock(CodeGen *cg, ASTNode *node) {
+    int savedOffset = cg->nextOffset;
     int hasDecls = (node->child[0] != NULL);
     int n = 0;
+
     if (hasDecls) {
         cgPushScope(cg);
+
         for (ASTNode *d = node->child[0]; d; d = d->next) {
             cgInsert(cg, d->lexeme, d->tipo);
             n++;
         }
+
         emit(cg, "    addiu $sp, $sp, -%d    # enter scope (%d var%s)\n",
-             4*n, n, n==1?"":"s");
+             4*n, n, n == 1 ? "" : "s");
     }
-    for (ASTNode *c = node->child[1]; c; c = c->next)
+
+    for (ASTNode *c = node->child[1]; c; c = c->next) {
         codegenNode(cg, c);
+    }
+
     if (hasDecls) {
         emit(cg, "    addiu $sp, $sp, %d     # exit scope\n", 4*n);
         cgPopScope(cg);
+        cg->nextOffset = savedOffset;
     }
 }
 
-/* ── top-level entry point ───────────────────────────────────── */
+/* top-level entry point */
 
 void codegenProgram(ASTNode *root, FILE *out) {
     CodeGen cg = {0};
@@ -333,7 +349,7 @@ void codegenProgram(ASTNode *root, FILE *out) {
     fprintf(out, "main:\n");
     fprintf(out, "    move  $fp, $sp          # fix frame pointer\n");
 
-    /* pass 2: generate code (root is NODE_PROGRAM → child[0] is NODE_BLOCK) */
+    /* pass 2: generate code (root is NODE_PROGRAM to child[0] is NODE_BLOCK) */
     if (root && root->kind == NODE_PROGRAM)
         codegenBlock(&cg, root->child[0]);
 
