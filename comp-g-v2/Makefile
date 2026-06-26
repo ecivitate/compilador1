@@ -5,68 +5,56 @@ BISON ?= bison
 CFLAGS ?= -Wall -Wextra -g -std=gnu11
 LDLIBS ?=
 
-SRCDIR = src
-BUILDDIR = build
+SRCDIR := src
+BUILDDIR := build
+PARSER := g-v2
 
 ifeq ($(OS),Windows_NT)
-	TARGET = g-v1.exe
-	DETECTED_OS = Windows
+TARGET := g-v2.exe
 else
-	TARGET = g-v1
-	DETECTED_OS = Unix
+TARGET := g-v2
 endif
 
-HDRS = \
-	$(SRCDIR)/ast.h \
-	$(SRCDIR)/symtable.h \
-	$(SRCDIR)/semantic.h \
-	$(SRCDIR)/codegen.h
+CFILES := ast.c symtable.c semantic.c codegen.c
+HDRS := $(addprefix $(SRCDIR)/,ast.h symtable.h semantic.h codegen.h)
+OBJS := \
+        $(BUILDDIR)/$(PARSER).tab.o \
+        $(BUILDDIR)/lex.yy.o \
+        $(addprefix $(BUILDDIR)/,$(CFILES:.c=.o))
 
-OBJS = \
-	$(BUILDDIR)/g-v1.tab.o \
-	$(BUILDDIR)/lex.yy.o \
-	$(BUILDDIR)/ast.o \
-	$(BUILDDIR)/symtable.o \
-	$(BUILDDIR)/semantic.o \
-	$(BUILDDIR)/codegen.o
-
-.PHONY: all clean rebuild test os
+.PHONY: all clean rebuild test run
 
 all: $(TARGET)
 
-os:
-	@echo "Sistema detectado: $(DETECTED_OS)"
-	@echo "Executavel: $(TARGET)"
-
 $(BUILDDIR):
-	mkdir -p $(BUILDDIR)
+		mkdir -p $(BUILDDIR)
 
-$(BUILDDIR)/g-v1.tab.c $(BUILDDIR)/g-v1.tab.h: $(SRCDIR)/g-v1.y $(HDRS) | $(BUILDDIR)
-	$(BISON) -d -o $(BUILDDIR)/g-v1.tab.c $(SRCDIR)/g-v1.y
+$(BUILDDIR)/$(PARSER).tab.c $(BUILDDIR)/$(PARSER).tab.h: $(SRCDIR)/$(PARSER).y $(HDRS) | $(BUILDDIR)
+		$(BISON) -d -o $(BUILDDIR)/$(PARSER).tab.c $(SRCDIR)/$(PARSER).y
 
-$(BUILDDIR)/lex.yy.c: $(SRCDIR)/g-v1.l $(BUILDDIR)/g-v1.tab.h $(HDRS) | $(BUILDDIR)
-	$(FLEX) -o $(BUILDDIR)/lex.yy.c $(SRCDIR)/g-v1.l
+$(BUILDDIR)/lex.yy.c: $(SRCDIR)/$(PARSER).l $(BUILDDIR)/$(PARSER).tab.h $(HDRS) | $(BUILDDIR)
+		$(FLEX) -o $(BUILDDIR)/lex.yy.c $(SRCDIR)/$(PARSER).l
 
-$(BUILDDIR)/g-v1.tab.o: $(BUILDDIR)/g-v1.tab.c $(BUILDDIR)/g-v1.tab.h $(HDRS)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
+$(BUILDDIR)/$(PARSER).tab.o: $(BUILDDIR)/$(PARSER).tab.c $(BUILDDIR)/$(PARSER).tab.h $(HDRS)
+		$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
 
-$(BUILDDIR)/lex.yy.o: $(BUILDDIR)/lex.yy.c $(BUILDDIR)/g-v1.tab.h $(HDRS)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
+$(BUILDDIR)/lex.yy.o: $(BUILDDIR)/lex.yy.c $(BUILDDIR)/$(PARSER).tab.h $(HDRS)
+		$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c $(HDRS) | $(BUILDDIR)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
+		$(CC) $(CFLAGS) -I$(SRCDIR) -I$(BUILDDIR) -c $< -o $@
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(LDLIBS)
+		$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
-clean:
-	rm -rf $(BUILDDIR) g-v1 g-v1.exe
-	rm -f *.asm
-	rm -f tests/corretos/*.asm
-	rm -f tests/errados/sintatico/*.asm
-	rm -f tests/errados/semantico/*.asm
-
-rebuild: clean all
+run: all
+		./$(TARGET) $(FILE)
 
 test: all
-	EXE=./$(TARGET) bash ./test_run.sh
+		bash ./test_run.sh ./$(TARGET)
+
+clean:
+		rm -rf $(BUILDDIR) g-v2 g-v2.exe
+		find . -name '*.asm' -type f -delete 2>/dev/null || true
+
+rebuild: clean all

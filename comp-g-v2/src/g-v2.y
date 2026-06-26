@@ -129,10 +129,7 @@ listaparametrostail
 
 declprograma
     : PRINCIPAL bloco
-        {
-            $$ = newNode(NODE_PROGRAM, @1.first_line);
-            $$->child[0] = $2;
-        }
+        { $$ = $2; }
     ;
 
 bloco

@@ -17,6 +17,7 @@ typedef enum {
     NODE_INTCONST,
     NODE_CARCONST,
     NODE_CADEIA,
+
     NODE_FUNC,
     NODE_PARAM,
     NODE_RETORNE,
@@ -37,8 +38,8 @@ typedef struct ASTNode {
     TipoVar         tipo;
     struct ASTNode *child[3];
     struct ASTNode *next;
-    int isArray;
-    int arraySize;
+    int isArray; // 0 se não for array, 1 se for array
+    int arraySize; //tamanho do array, 0 se não for array
 } ASTNode;
 
 ASTNode *newNode(NodeKind kind, int line);

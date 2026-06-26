@@ -6,6 +6,206 @@
 
 /* helpers */
 
+static void codegenFunction(CodeGen *cg, ASTNode *func);    
+static void codegenFunctionList(CodeGen *cg, ASTNode *funcs);
+static void emit(CodeGen *cg, const char *fmt, ...);
+
+static void cgPushScope(CodeGen *cg);
+static void cgPopScope(CodeGen *cg);
+static CGEntry *cgLookup(CodeGen *cg, const char *name);
+
+static void codegenAddress(CodeGen *cg, ASTNode *node);
+static TipoVar codegenExpr(CodeGen *cg, ASTNode *node);
+static void codegenNode(CodeGen *cg, ASTNode *node);
+static void codegenBlock(CodeGen *cg, ASTNode *node);
+
+static void codegenFunction(CodeGen *cg, ASTNode *func);
+static void codegenFunctionList(CodeGen *cg, ASTNode *funcs);
+static void codegenFunctionBlock(CodeGen *cg, ASTNode *block);
+
+static void cgInsertFunc(CodeGen *cg, ASTNode *func) {
+    CGEntry *e = calloc(1, sizeof(CGEntry));
+
+    e->name      = strdup(func->lexeme);
+    e->kind      = CG_FUNC;
+    e->tipo      = func->tipo;
+    e->isArray   = 0;
+    e->arraySize = 0;
+    e->offset    = 0;
+
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "func_%s", func->lexeme);
+    e->label = strdup(buffer);
+
+    e->next = cg->scopeTop->entries;
+    cg->scopeTop->entries = e;
+}
+
+
+static int countArgs(ASTNode *args) {
+    int n = 0;
+    for (ASTNode *a = args; a; a = a->next) n++;
+    return n;
+}
+
+static char *makeGlobalLabel(const char *name) {
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "global_%s", name);
+    return strdup(buffer);
+}
+
+static void cgInsertGlobal(CodeGen *cg, ASTNode *decl) {
+    CGEntry *e = calloc(1, sizeof(CGEntry));
+
+    e->name      = strdup(decl->lexeme);
+    e->kind      = CG_GLOBAL;
+    e->tipo      = decl->tipo;
+    e->isArray   = decl->isArray;
+    e->arraySize = decl->arraySize;
+    e->offset    = 0;
+    e->label     = makeGlobalLabel(decl->lexeme);
+
+    e->next = cg->scopeTop->entries;
+    cg->scopeTop->entries = e;
+}
+
+static void emitGlobalDecls(CodeGen *cg, ASTNode *decls) {
+    for (ASTNode *d = decls; d; d = d->next) {
+        char *label = makeGlobalLabel(d->lexeme);
+
+        if (d->isArray) {
+            emit(cg, "%s: .space %d\n", label, 4 * d->arraySize);
+        } else {
+            emit(cg, "%s: .word 0\n", label);
+        }
+
+        free(label);
+    }
+}
+
+static void cgInsertParam(CodeGen *cg, ASTNode *param, int position) {
+    CGEntry *e = calloc(1, sizeof(CGEntry));
+
+    e->name      = strdup(param->lexeme);
+    e->kind      = CG_PARAM;
+    e->tipo      = param->tipo;
+    e->isArray   = param->isArray;
+    e->arraySize = 0;
+    e->offset    = 8 + 4 * position;
+    e->label     = NULL;
+
+    e->next = cg->scopeTop->entries;
+    cg->scopeTop->entries = e;
+}
+
+static void codegenAddress(CodeGen *cg, ASTNode *node) {
+    if (!node) return;
+
+    switch (node->kind) {
+        case NODE_IDENT: {
+            CGEntry *e = cgLookup(cg, node->lexeme);
+
+            if (e->kind == CG_GLOBAL) {
+                emit(cg, "    la    $t2, %s          # address global %s\n",
+                     e->label, node->lexeme);
+            } else {
+                emit(cg, "    addiu $t2, $fp, %d     # address %s\n",
+                     e->offset, node->lexeme);
+            }
+
+            break;
+        }
+
+        case NODE_ARRAY_ACCESS: {
+            CGEntry *e = cgLookup(cg, node->lexeme);
+
+            /*
+            Calcula o índice.
+            Resultado fica em $t0.
+            */
+            codegenExpr(cg, node->child[0]);
+
+            /*
+            Cada posição ocupa 4 bytes.
+            índice = índice * 4
+            */
+            emit(cg, "    sll   $t0, $t0, 2       # index * 4\n");
+
+            if (e->kind == CG_GLOBAL) {
+                emit(cg, "    la    $t2, %s          # base global array %s\n",
+                    e->label, node->lexeme);
+            } else if (e->kind == CG_PARAM && e->isArray) {
+                
+                // Parâmetro vetor é passado por referência.
+                // O slot do parâmetro contém o endereço base.
+                
+                emit(cg, "    lw    $t2, %d($fp)     # base param array %s\n",
+                    e->offset, node->lexeme);
+            } else {
+                
+               // Vetor local.
+                
+                emit(cg, "    addiu $t2, $fp, %d     # base local array %s\n",
+                    e->offset, node->lexeme);
+            }
+
+            emit(cg, "    addu  $t2, $t2, $t0     # address array element\n");
+
+            break;
+        }
+
+        default:
+            emit(cg, "    # ERRO INTERNO: lvalue invalido no codegenAddress\n");
+            break;
+    }
+}
+
+static void codegenArg(CodeGen *cg, ASTNode *arg) {
+    if (arg->kind == NODE_IDENT) {
+        CGEntry *e = cgLookup(cg, arg->lexeme);
+
+        if (e && e->isArray) {
+            /*
+              Passa endereço base do vetor.
+            */
+            if (e->kind == CG_GLOBAL) {
+                emit(cg, "    la    $t0, %s          # arg array global\n", e->label);
+            } else if (e->kind == CG_PARAM) {
+                emit(cg, "    lw    $t0, %d($fp)     # arg array param\n", e->offset);
+            } else {
+                emit(cg, "    addiu $t0, $fp, %d     # arg array local\n", e->offset);
+            }
+
+            emit(cg, "    addiu $sp, $sp, -4\n");
+            emit(cg, "    sw    $t0, 0($sp)\n");
+            return;
+        }
+    }
+
+    codegenExpr(cg, arg);
+    emit(cg, "    addiu $sp, $sp, -4\n");
+    emit(cg, "    sw    $t0, 0($sp)\n");
+}
+
+static void codegenCallArgsReverse(CodeGen *cg, ASTNode *arg) {
+    if (!arg) return;
+
+    codegenCallArgsReverse(cg, arg->next);
+    codegenArg(cg, arg);
+}
+
+static void codegenCallArgs(CodeGen *cg, ASTNode *args) {
+    codegenCallArgsReverse(cg, args);
+}
+
+static int cgTypeSize(ASTNode *decl) {
+    if (decl->isArray) {
+        return 4 * decl->arraySize;
+    }
+
+    return 4;
+}
+
 static void emit(CodeGen *cg, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -37,19 +237,38 @@ static void cgPopScope(CodeGen *cg) {
     if (!cg->scopeTop) return;
     CGScope  *s = cg->scopeTop;
     CGEntry  *e = s->entries;
-    while (e) { CGEntry *nx = e->next; free(e->name); free(e); e = nx; }
+    while (e) {
+        CGEntry *nx = e->next;
+
+        free(e->name);
+        free(e->label);
+        free(e);
+
+        e = nx;
+    }
     cg->scopeTop = s->prev;
     free(s);
 }
 
-static void cgInsert(CodeGen *cg, const char *name, TipoVar tipo) {
-    cg->nextOffset -= 4;
-    CGEntry *e  = calloc(1, sizeof(CGEntry));
-    e->name     = strdup(name);
-    e->offset   = cg->nextOffset;
-    e->tipo     = tipo;
-    e->next     = cg->scopeTop->entries;
+
+static void cgInsertLocal(CodeGen *cg, ASTNode *decl) {
+    int size = cgTypeSize(decl);
+
+    cg->nextOffset -= size;
+
+    CGEntry *e = calloc(1, sizeof(CGEntry));
+    e->name      = strdup(decl->lexeme);
+    e->kind      = CG_LOCAL;
+    e->tipo      = decl->tipo;
+    e->isArray   = decl->isArray;
+    e->arraySize = decl->arraySize;
+    e->offset    = cg->nextOffset;
+    e->label     = NULL;
+
+    e->next = cg->scopeTop->entries;
     cg->scopeTop->entries = e;
+
+    cg->scopeTop->scopeSize += size;
 }
 
 static CGEntry *cgLookup(CodeGen *cg, const char *name) {
@@ -98,11 +317,105 @@ static int parseCarconst(const char *lex) {
     return (unsigned char)lex[1];
 }
 
-/* forward declarations */
+static void codegenFunctionList(CodeGen *cg, ASTNode *funcs) {
+    for (ASTNode *f = funcs; f; f = f->next) {
+        codegenFunction(cg, f);
+    }
+}
 
-static TipoVar codegenExpr(CodeGen *cg, ASTNode *node);
-static void    codegenNode(CodeGen *cg, ASTNode *node);
-static void    codegenBlock(CodeGen *cg, ASTNode *node);
+static void codegenFunctionBlock(CodeGen *cg, ASTNode *block) {
+    if (!block) return;
+
+    int savedOffset = cg->nextOffset;
+
+    /*
+      Não faz cgPushScope aqui.
+      Usa o escopo atual, que já tem os parâmetros.
+    */
+    int localSizeBefore = cg->scopeTop->scopeSize;
+
+    for (ASTNode *d = block->child[0]; d; d = d->next) {
+        cgInsertLocal(cg, d);
+    }
+
+    int localSize = cg->scopeTop->scopeSize - localSizeBefore;
+
+    if (localSize > 0) {
+        emit(cg, "    addiu $sp, $sp, -%d    # function locals\n", localSize);
+    }
+
+    for (ASTNode *c = block->child[1]; c; c = c->next) {
+        codegenNode(cg, c);
+    }
+
+    /*
+      Não precisa desalocar locais aqui se o epílogo faz:
+          move $sp, $fp
+      Mas pode manter organizado se quiser.
+    */
+    cg->nextOffset = savedOffset;
+}
+
+static void codegenFunction(CodeGen *cg, ASTNode *func) {
+    int savedOffset = cg->nextOffset;
+    char savedEnd[128];
+
+    strcpy(savedEnd, cg->currentFunctionEnd);
+    snprintf(cg->currentFunctionEnd, sizeof(cg->currentFunctionEnd),
+             "func_%s_end", func->lexeme);
+
+    cg->nextOffset = 0;
+
+    emit(cg, "\nfunc_%s:\n", func->lexeme);
+
+    /*
+      Prólogo.
+    */
+    emit(cg, "    addiu $sp, $sp, -8\n");
+    emit(cg, "    sw    $fp, 0($sp)\n");
+    emit(cg, "    sw    $ra, 4($sp)\n");
+    emit(cg, "    move  $fp, $sp\n");
+
+    /*
+      Escopo da função.
+    */
+    cgPushScope(cg);
+
+    /*
+      Insere parâmetros.
+    */
+    int pos = 0;
+    for (ASTNode *p = func->child[0]; p; p = p->next) {
+        cgInsertParam(cg, p, pos);
+        pos++;
+    }
+
+    /*
+      O bloco externo da função deve usar esse mesmo escopo,
+      porque os parâmetros já estão nele.
+      Então não chame codegenBlock direto se ele criar outro escopo
+      para as declarações externas.
+    */
+    codegenFunctionBlock(cg, func->child[1]);
+
+    emit(cg, "%s:\n", cg->currentFunctionEnd);
+
+    /*
+      Epílogo.
+    */
+    emit(cg, "    move  $sp, $fp\n");
+    emit(cg, "    lw    $fp, 0($sp)\n");
+    emit(cg, "    lw    $ra, 4($sp)\n");
+    emit(cg, "    addiu $sp, $sp, 8\n");
+    emit(cg, "    jr    $ra\n");
+
+    cgPopScope(cg);
+
+    cg->nextOffset = savedOffset;
+    strcpy(cg->currentFunctionEnd, savedEnd);
+}
+
+
 
 /* expression code generation (result always in $t0) */
 
@@ -125,17 +438,63 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
         /* identifier */
         case NODE_IDENT: {
             CGEntry *e = cgLookup(cg, node->lexeme);
-            emit(cg, "    lw    $t0, %d($fp)     # load %s\n",
-                 e->offset, node->lexeme);
+
+            if (e->isArray) {
+                /*
+                Usar vetor inteiro como expressão comum não deveria passar
+                pelo semântico, exceto em casos especiais como argumento.
+                Aqui, como fallback, carregamos o endereço base.
+                */
+                if (e->kind == CG_GLOBAL) {
+                    emit(cg, "    la    $t0, %s          # array address %s\n",
+                        e->label, node->lexeme);
+                } else if (e->kind == CG_PARAM) {
+                    emit(cg, "    lw    $t0, %d($fp)     # param array address %s\n",
+                        e->offset, node->lexeme);
+                } else {
+                    emit(cg, "    addiu $t0, $fp, %d     # local array address %s\n",
+                        e->offset, node->lexeme);
+                }
+
+                return e->tipo;
+            }
+
+            codegenAddress(cg, node);
+            emit(cg, "    lw    $t0, 0($t2)       # load %s\n", node->lexeme);
+
             return e->tipo;
         }
 
         /* assignment (also an expression) */
         case NODE_ATRIB: {
-            CGEntry *e = cgLookup(cg, node->lexeme);
-            TipoVar  t = codegenExpr(cg, node->child[0]);
-            emit(cg, "    sw    $t0, %d($fp)     # store %s\n",
-                 e->offset, node->lexeme);
+            /*
+            Primeiro calcula o valor.
+            Resultado em $t0.
+            */
+            TipoVar t = codegenExpr(cg, node->child[1]);
+
+            /*
+            Salva o valor, porque codegenAddress pode usar $t0
+            para calcular índice de vetor.
+            */
+            pushT0(cg);
+
+            /*
+            Calcula endereço do destino em $t2.
+            */
+            codegenAddress(cg, node->child[0]);
+
+            /*
+            Recupera valor em $t1 e armazena no endereço.
+            */
+            popT1(cg);
+            emit(cg, "    sw    $t1, 0($t2)       # assignment\n");
+
+            /*
+            Como atribuição também é expressão, deixa valor em $t0.
+            */
+            emit(cg, "    move  $t0, $t1\n");
+
             return t;
         }
 
@@ -188,6 +547,36 @@ static TipoVar codegenExpr(CodeGen *cg, ASTNode *node) {
                 return TIPO_INT;
             return (lt != TIPO_NENHUM) ? lt : rt;
         }
+
+        case NODE_ARRAY_ACCESS: {
+            CGEntry *e = cgLookup(cg, node->lexeme);
+
+            codegenAddress(cg, node);
+            emit(cg, "    lw    $t0, 0($t2)       # load %s[index]\n",
+                node->lexeme);
+
+            return e->tipo;
+        }
+
+        case NODE_CALL: {
+            CGEntry *f = cgLookup(cg, node->lexeme);
+            int argc = countArgs(node->child[0]);
+
+            codegenCallArgs(cg, node->child[0]);
+
+            emit(cg, "    jal   func_%s           # call %s\n",
+                node->lexeme, node->lexeme);
+
+            if (argc > 0) {
+                emit(cg, "    addiu $sp, $sp, %d      # pop args\n", 4 * argc);
+            }
+
+            emit(cg, "    move  $t0, $v0          # call result\n");
+
+            return f ? f->tipo : TIPO_INT;
+        }
+
+        
 
         default:
             return TIPO_NENHUM;
@@ -258,16 +647,41 @@ static void codegenNode(CodeGen *cg, ASTNode *node) {
             break;
 
         case NODE_LEIA: {
-            CGEntry *e = cgLookup(cg, node->lexeme);
+            ASTNode *dest = node->child[0];
+
+            /*
+            Descobrir o tipo do destino.
+            Para x, busca x.
+            Para v[i], busca v.
+            */
+            const char *name = NULL;
+
+            if (dest->kind == NODE_IDENT || dest->kind == NODE_ARRAY_ACCESS) {
+                name = dest->lexeme;
+            }
+
+            CGEntry *e = cgLookup(cg, name);
+
             if (e->tipo == TIPO_INT) {
-                emit(cg, "    li    $v0, 5             # read int\n");
+                emit(cg, "    li    $v0, 5            # read int\n");
                 emit(cg, "    syscall\n");
             } else {
-                emit(cg, "    li    $v0, 12            # read char\n");
+                emit(cg, "    li    $v0, 12           # read char\n");
                 emit(cg, "    syscall\n");
             }
-            emit(cg, "    sw    $v0, %d($fp)     # store to %s\n",
-                 e->offset, node->lexeme);
+
+            /*
+            Salva valor lido porque codegenAddress pode usar $t0.
+            Aqui o valor está em $v0.
+            */
+            emit(cg, "    move  $t0, $v0\n");
+            pushT0(cg);
+
+            codegenAddress(cg, dest);
+
+            popT1(cg);
+            emit(cg, "    sw    $t1, 0($t2)       # leia store\n");
+
             break;
         }
 
@@ -291,6 +705,18 @@ static void codegenNode(CodeGen *cg, ASTNode *node) {
             break;
         }
 
+        case NODE_ARRAY_ACCESS:
+        case NODE_CALL:
+            codegenExpr(cg, node);
+            break;
+        
+        case NODE_RETORNE:
+            codegenExpr(cg, node->child[0]);
+            emit(cg, "    move  $v0, $t0          # return value\n");
+            emit(cg, "    j     %s                # return\n", cg->currentFunctionEnd);
+            break;
+
+
         default:
             emit(cg, "    # unhandled node kind %d\n", node->kind);
             break;
@@ -300,18 +726,16 @@ static void codegenNode(CodeGen *cg, ASTNode *node) {
 static void codegenBlock(CodeGen *cg, ASTNode *node) {
     int savedOffset = cg->nextOffset;
     int hasDecls = (node->child[0] != NULL);
-    int n = 0;
 
     if (hasDecls) {
         cgPushScope(cg);
 
         for (ASTNode *d = node->child[0]; d; d = d->next) {
-            cgInsert(cg, d->lexeme, d->tipo);
-            n++;
+            cgInsertLocal(cg, d);
         }
 
-        emit(cg, "    addiu $sp, $sp, -%d    # enter scope (%d var%s)\n",
-             4*n, n, n == 1 ? "" : "s");
+        emit(cg, "    addiu $sp, $sp, -%d    # enter scope\n",
+             cg->scopeTop->scopeSize);
     }
 
     for (ASTNode *c = node->child[1]; c; c = c->next) {
@@ -319,7 +743,9 @@ static void codegenBlock(CodeGen *cg, ASTNode *node) {
     }
 
     if (hasDecls) {
-        emit(cg, "    addiu $sp, $sp, %d     # exit scope\n", 4*n);
+        emit(cg, "    addiu $sp, $sp, %d     # exit scope\n",
+             cg->scopeTop->scopeSize);
+
         cgPopScope(cg);
         cg->nextOffset = savedOffset;
     }
@@ -331,28 +757,61 @@ void codegenProgram(ASTNode *root, FILE *out) {
     CodeGen cg = {0};
     cg.out        = out;
     cg.nextOffset = 0;
+    cg.currentFunctionEnd[0] = '\0';
 
-    /* pass 1: collect all string literals */
     collectStrings(&cg, root);
 
-    /* write .data section */
-    fprintf(out, "# Gerado pelo compilador G-V1\n");
+    fprintf(out, "# Gerado pelo compilador G-V2\n");
     fprintf(out, "    .data\n");
+
+    
+      //Strings.
+    
     for (int i = 0; i < cg.stringCount; i++) {
-        /* lexeme already includes surrounding quotes */
-        fprintf(out, "str_%d:  .asciiz %s\n", i, cg.strings[i].node->lexeme);
+        fprintf(out, "str_%d:  .asciiz %s\n",
+                i,
+                cg.strings[i].node->lexeme);
     }
 
-    /* write .text section */
+    
+      //Globais.
+    
+    if (root && root->kind == NODE_PROGRAM) {
+        emitGlobalDecls(&cg, root->child[0]);
+    }
+
     fprintf(out, "\n    .text\n");
     fprintf(out, "    .globl main\n");
-    fprintf(out, "main:\n");
-    fprintf(out, "    move  $fp, $sp          # fix frame pointer\n");
 
-    /* pass 2: generate code (root is NODE_PROGRAM to child[0] is NODE_BLOCK) */
-    if (root && root->kind == NODE_PROGRAM)
-        codegenBlock(&cg, root->child[0]);
+    /*
+      Escopo global do codegen.
+      Aqui entram as globais para cgLookup encontrar depois.
+    */
+    cgPushScope(&cg);
 
-    fprintf(out, "    li    $v0, 10           # exit\n");
-    fprintf(out, "    syscall\n");
+    if (root && root->kind == NODE_PROGRAM) {
+        for (ASTNode *d = root->child[0]; d; d = d->next) {
+            cgInsertGlobal(&cg, d);
+        }
+
+        for (ASTNode *f = root->child[1]; f; f = f->next) {
+            cgInsertFunc(&cg, f);
+        }
+        
+        codegenFunctionList(&cg, root->child[1]);
+
+        
+          //Gera main.
+        
+        fprintf(out, "\nmain:\n");
+        fprintf(out, "    move  $fp, $sp          # fix frame pointer\n");
+
+        cg.nextOffset = 0;
+        codegenBlock(&cg, root->child[2]);
+
+        fprintf(out, "    li    $v0, 10           # exit\n");
+        fprintf(out, "    syscall\n");
+    }
+
+    cgPopScope(&cg);
 }

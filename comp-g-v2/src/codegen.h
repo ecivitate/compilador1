@@ -5,16 +5,47 @@
 #include "ast.h"
 
 /* Codegen symbol table — maps name → (offset from $fp, tipo) */
+
+typedef enum {
+    CG_LOCAL,
+    CG_PARAM,
+    CG_GLOBAL,
+    CG_FUNC
+} CGKind;
+
 typedef struct CGEntry {
     char           *name;
-    int             offset;    /* negative offset from $fp, e.g. -4 */
+    CGKind          kind;
+
     TipoVar         tipo;
+    int             isArray;
+    int             arraySize;
+
+    /*
+      Para local e parâmetro:
+        offset em relação a $fp.
+
+      Para global:
+        offset não é usado.
+    */
+    int             offset;
+
+    /*
+      Para global:
+        label no .data.
+
+      Exemplo:
+        global_x
+        global_v
+    */
+    char           *label;
+
     struct CGEntry *next;
 } CGEntry;
 
 typedef struct CGScope {
     CGEntry        *entries;
-    int             scopeSize; /* bytes allocated for this scope (4 * num_vars) */
+    int             scopeSize; /* bytes allocated for this scope */
     struct CGScope *prev;
 } CGScope;
 
@@ -31,8 +62,11 @@ typedef struct {
     int          labelCount;  /* global counter for unique labels */
     int          nextOffset;  /* next available var offset (starts at -4) */
     CGScope     *scopeTop;
+
     StringEntry  strings[MAX_STRINGS];
     int          stringCount;
+
+    char         currentFunctionEnd[128];
 } CodeGen;
 
 void codegenProgram(ASTNode *root, FILE *out);
